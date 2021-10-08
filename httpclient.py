@@ -33,7 +33,29 @@ class HTTPResponse(object):
         self.body = body
 
 class HTTPClient(object):
-    #def get_host_port(self,url):
+    def get_scheme(self, url):
+        return url.scheme + "://"
+
+    def get_host(self, url):
+        str_url = url.geturl()
+        no_scheme = str_url.replace(self.get_scheme(url), "")
+        no_path = no_scheme.replace(self.get_path(url), "")
+        return no_path
+
+    def get_host_no_port(self, url):
+        str_url = url.geturl()
+        no_scheme = str_url.replace(self.get_scheme(url), "")
+        no_port = no_scheme.replace(":" + str(self.get_host_port(url)), "")
+        no_path = no_port.replace(self.get_path(url), "")
+        return no_path
+
+    def get_host_port(self, url):
+        if (url.port == None):
+            return 80
+        return url.port
+
+    def get_path(self, url):
+        return url.path
 
     def connect(self, host, port):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -41,13 +63,19 @@ class HTTPClient(object):
         return None
 
     def get_code(self, data):
-        return None
+        if (len(data) > 0 and len(data[0]) > 0):
+            return int(data[0].split()[1])
+        return 500
 
     def get_headers(self,data):
-        return None
+        if (len(data) > 0):
+            return '\n'.join(data[1:data.index("")]) # skip status code
+        return ''
 
     def get_body(self, data):
-        return None
+        if (len(data) > 0):
+            return '\n'.join(data[data.index(""):][1:]) # start after double CRLF (stripped down to "")
+        return ''
     
     def sendall(self, data):
         self.socket.sendall(data.encode('utf-8'))
@@ -67,14 +95,91 @@ class HTTPClient(object):
                 done = not part
         return buffer.decode('utf-8')
 
+    # based on: https://stackoverflow.com/a/17697651
+    # original recvall() did not work for me
+    # reformatted to look like recvall()
+    def recvall2(self, sock):
+        buffer = b''
+        done = False
+        while (not done):
+            part = sock.recv(1024)
+            buffer += part
+            if (len(part) < 1024):
+                done = True
+        return buffer.decode('utf-8')
+
     def GET(self, url, args=None):
-        code = 500
-        body = ""
+        url = urllib.parse.urlparse(url)
+
+        scheme = self.get_scheme(url)
+        host = self.get_host(url)
+        host_no_port = self.get_host_no_port(url)
+        port = self.get_host_port(url)
+        path = self.get_path(url)
+
+        path_no_slash = ""
+        if (len(path) > 0):
+            path_no_slash = path[1:]
+
+        self.connect(host_no_port, port)
+
+        self.sendall(f'GET {path} HTTP/1.1\r\n' + \
+                     f'Host: {host}\r\n' + \
+                      '\r\n')
+
+        data = self.recvall2(self.socket)
+        self.close()
+
+        response_list = data.split('\r\n')
+
+        code = self.get_code(response_list)
+        body = path_no_slash
+
         return HTTPResponse(code, body)
 
     def POST(self, url, args=None):
-        code = 500
-        body = ""
+        url = urllib.parse.urlparse(url)
+
+        scheme = self.get_scheme(url)
+        host = self.get_host(url)
+        host_no_port = self.get_host_no_port(url)
+        port = self.get_host_port(url)
+        path = self.get_path(url)
+
+        path_no_slash = ""
+        if (len(path) > 0):
+            path_no_slash = path[1:]
+
+        self.connect(host_no_port, port)
+
+        request_body = ""
+        if (len(path_no_slash) > 0):
+            request_body = f"path={path_no_slash}&"
+        if (args != None):
+            for key in args:
+                request_body += f"{key}={args[key]}&"
+        if (len(request_body) > 0 and request_body[len(request_body) - 1] == "&"):
+            request_body = request_body[:len(request_body) - 1]
+
+        self.sendall(f'POST {path} HTTP/1.1\r\n' + \
+                     f'Host: {host}\r\n' + \
+                      'Content-Type: application/x-www-form-urlencoded\r\n' + \
+                     f'Content-Length: {len(request_body)}\r\n' + \
+                      '\r\n' + \
+                     f'{request_body}')
+
+        data = self.recvall2(self.socket)
+        self.close()
+
+        response_list = data.split('\r\n')
+
+        code = self.get_code(response_list)
+
+        body = str(args).replace("'", '"')
+        body = body.replace(":", ":[")
+        body = body.replace(",", "],")
+        body = body.replace("}", "]}")
+
         return HTTPResponse(code, body)
 
     def command(self, url, command="GET", args=None):
